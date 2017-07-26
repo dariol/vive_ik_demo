@@ -3,6 +3,7 @@ using UnityEngine.UI;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using RootMotion.FinalIK;
 
 /// <summary>
 /// A tracker is 'bound' to one foot, then its pose(position and rotation) can be 
@@ -28,19 +29,23 @@ public class ViveIKDemo : MonoBehaviour {
     public List<GameObject> deviceMarkers;
     public GameObject leftHandOffsetObject;
     public GameObject rightHandOffsetObject;
+    public GameObject markerHead;
+    public Transform eyeTransform;
 
     Dictionary<int, Transform> deviceMarkerDict = new Dictionary<int, Transform>();
     Stage stage = Stage.Stage0;
     Queue<object> logQueue = new Queue<object>(); // logs in logQueue can be seen in VR
     int maxLogCount = 8;
     float initHeight = 1.75f;
+    IKDemoModelState initModelState;
 
     Dictionary<TrackerRole, int> trackers = new Dictionary<TrackerRole, int>();
     List<OffsetTracking> offsetTrackedList = new List<OffsetTracking>();
 	Transform leftHandTarget = null;
 	Transform rightHandTarget = null;
     AnimationBlendTest animationBlender;
-    
+    List<LimbIK> ikList = new List<LimbIK>(); // to fully control the execution orders of the IK solvers
+
 
     // Use this for initialization
     void Start () {
@@ -48,11 +53,22 @@ public class ViveIKDemo : MonoBehaviour {
         {
             deviceMarkerDict[(int)item.GetComponent<SteamVR_TrackedObject>().index] = item.transform;
         }
-        InitWithCustomHeight();
+        //InitWithCustomHeight();
 
         animationBlender = GetComponent<AnimationBlendTest>();
+        RecordInitModelState();
 	}
 	
+    void RecordInitModelState()
+    {
+        initModelState = new IKDemoModelState();
+        initModelState.eyePos = eyeTransform.position;
+        initModelState.ankleMarkerLeftPos = ankleMarkerLeft.transform.position;
+        initModelState.ankleMarkerRightPos = ankleMarkerRight.transform.position;
+        initModelState.markerHeadPos = markerHead.transform.position;
+        initModelState.modelScale = transform.localScale;
+    }
+
 	// Update is called once per frame
 	void Update () {
         
@@ -63,6 +79,11 @@ public class ViveIKDemo : MonoBehaviour {
         {
             var device = SteamVR_Controller.Input(i);
             gripClicked |= device.GetPressUp(SteamVR_Controller.ButtonMask.Grip);
+        }
+
+        if (stage == Stage.Stage0)
+        {
+            AutoAdjustHeight();
         }
 
         if (stage == Stage.Stage0 && (Input.GetKeyUp(KeyCode.Alpha1) || Input.GetMouseButtonUp(2) || gripClicked))
@@ -111,6 +132,19 @@ public class ViveIKDemo : MonoBehaviour {
         }
     }
 
+    void AutoAdjustHeight()
+    {
+
+        float actualEyeHeight = Camera.main.transform.position.y;
+
+        actualEyeHeight = Mathf.Clamp(actualEyeHeight, 0.7f, 2.5f);
+
+        float eyeHeightToBodyHeadRatio = initModelState.eyePos.y / initHeight;
+        float estimatedHeight = actualEyeHeight / eyeHeightToBodyHeadRatio;
+
+        AdjustToHeight(estimatedHeight);
+    }
+
     void InitWithCustomHeight()
     {
         float customHeight;
@@ -128,51 +162,93 @@ public class ViveIKDemo : MonoBehaviour {
     void AdjustToHeight(float customHeight)
     {
         float ratio = customHeight / initHeight;
-        ankleMarkerLeft.transform.position *= ratio;
-        ankleMarkerRight.transform.position *= ratio;
-        transform.localScale *= ratio;
+        ankleMarkerLeft.transform.position = initModelState.ankleMarkerLeftPos*ratio;
+        ankleMarkerRight.transform.position = initModelState.ankleMarkerRightPos*ratio;
+        markerHead.transform.position = initModelState.markerHeadPos*ratio;
+        transform.localScale = initModelState.modelScale*ratio;
     }
+
 
     void StartIK()
     {
         var ikComps = GetComponents<RootMotion.FinalIK.LimbIK>();
+
+        //     foreach (var item in ikComps)
+        //     {
+        //var limbik = item as RootMotion.FinalIK.LimbIK;
+        //limbik.solver.bendNormal = new Vector3 (1, 0, 0);
+        //string targetName = limbik.solver.target.name;
+        //if (targetName.StartsWith("Controller"))
+        //{
+        //	if (targetName.Contains ("left")) {
+        //		limbik.solver.target = leftHandTarget;
+        //	} else {
+        //		limbik.solver.target = rightHandTarget;
+        //	}
+        //	if (limbik.solver.target != null)
+        //		item.enabled = true;
+        //}
+        //else
+        //{
+        //	item.enabled = true;
+        //}
+        //     }
+
+        int headIndex = -1;
+
         foreach (var item in ikComps)
         {
-			var limbik = item as RootMotion.FinalIK.LimbIK;
-			limbik.solver.bendNormal = new Vector3 (1, 0, 0);
-			string targetName = limbik.solver.target.name;
-			if (targetName.StartsWith("Controller"))
-			{
-				if (targetName.Contains ("left")) {
-					limbik.solver.target = leftHandTarget;
-				} else {
-					limbik.solver.target = rightHandTarget;
-				}
-				if (limbik.solver.target != null)
-					item.enabled = true;
-			}
-			else
-			{
-				item.enabled = true;
-			}
+            var limbik = item as RootMotion.FinalIK.LimbIK;
+            limbik.solver.bendNormal = new Vector3(1, 0, 0);
+            string targetName = limbik.solver.target.name;
+            if (targetName.StartsWith("Controller"))
+            {
+                if (targetName.Contains("left"))
+                {
+                    limbik.solver.target = leftHandTarget;
+                }
+                else {
+                    limbik.solver.target = rightHandTarget;
+                }
+                if (limbik.solver.target != null)
+                    ikList.Add(item);
+            }
+            else
+            {
+                if (item.solver.target == markerHead)
+                    headIndex = ikList.Count;
+
+                ikList.Add(item);
+            }
+
+            item.enabled = true;
         }
 
+        if (headIndex >= 0)
+        {
+            Swap(ikList, 0, headIndex);
+        }
     }
 
 
-	void UpdateIK()
+    void UpdateIK()
 	{
-		var ikComps = GetComponents<RootMotion.FinalIK.LimbIK>();
-		foreach (var item in ikComps)
-		{
-			var limbik = item as RootMotion.FinalIK.LimbIK;
-			if (limbik.solver.goal == AvatarIKGoal.LeftFoot || limbik.solver.goal == AvatarIKGoal.RightFoot)
-				limbik.solver.bendNormal = new Vector3 (1, 0, 0);
-			else if (limbik.solver.goal == AvatarIKGoal.LeftHand)
-				limbik.solver.bendNormal = new Vector3 (0, 0, -1);
-			else if (limbik.solver.goal == AvatarIKGoal.RightHand)
-				limbik.solver.bendNormal = new Vector3 (0, 0, 1);
-		}
+        var ikComps = GetComponents<RootMotion.FinalIK.LimbIK>();
+        foreach (var item in ikComps)
+        {
+            var limbik = item as RootMotion.FinalIK.LimbIK;
+            if (limbik.solver.goal == AvatarIKGoal.LeftFoot || limbik.solver.goal == AvatarIKGoal.RightFoot)
+                limbik.solver.bendNormal = new Vector3(1, 0, 0);
+            //else if (limbik.solver.goal == AvatarIKGoal.LeftHand)
+            //	limbik.solver.bendNormal = new Vector3 (0, 0, -1);
+            //else if (limbik.solver.goal == AvatarIKGoal.RightHand)
+            //	limbik.solver.bendNormal = new Vector3 (0, 0, 1);
+        }
+
+        foreach (var item in ikList)
+        {
+            item.UpdateSolverExternal();
+        }
 	}
 
     Pose GetPose(int index)
@@ -201,6 +277,8 @@ public class ViveIKDemo : MonoBehaviour {
                 offsetTrackedList.Add(trackedInfo);
             }
         }
+
+        markerHead.transform.parent = Camera.main.transform;
         
     }
 
